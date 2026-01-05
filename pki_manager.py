@@ -1,102 +1,160 @@
-import subprocess
-import os
 from pathlib import Path
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.backends import default_backend
+from datetime import datetime, timedelta
 import platform
 
 
 if platform.system() == "Windows":
-    PKI_PATH = Path(rf"\\192.168.92.128\chat_pki")
+    PKI_PATH = Path("Z:/") 
 else:
     PKI_PATH = Path.home() / "Documents" / "chat_pki"
 
 class PKIManager:
     def __init__(self):
-        """Initialize PKI directory structure"""
-        PKI_PATH.mkdir(exist_ok=True)
-        self.ensure_ca_exists()
-    
-    def ensure_ca_exists(self):
-        """Create CA certificate if it doesn't exist"""
-        ca_key = PKI_PATH / "ca.key"
-        ca_crt = PKI_PATH / "ca.crt"
+        """Initialize PKI - uses existing CA if available"""
+        if not PKI_PATH.exists():
+            print(f"Creating PKI directory: {PKI_PATH}")
+            PKI_PATH.mkdir(parents=True, exist_ok=True)
         
-        if not ca_key.exists():
-            # Generate CA private key
-            subprocess.run([
-                "openssl", "genrsa", 
-                "-out", str(ca_key), 
-                "4096"
-            ], check=True)
-            
-            # Generate CA certificate
-            subprocess.run([
-                "openssl", "req", "-new", "-x509",
-                "-days", "3650",
-                "-key", str(ca_key),
-                "-out", str(ca_crt),
-                "-subj", "/CN=ChatAppCA/O=ChatApp/C=TN"
-            ], check=True)
-            
-            print("CA certificate created successfully")
+        ca_key_path = PKI_PATH / "ca.key"
+        ca_crt_path = PKI_PATH / "ca.crt"
+        
+        if ca_key_path.exists() and ca_crt_path.exists():
+            print(f"✓ Using existing CA certificate from {PKI_PATH}")
+        else:
+            print("CA certificate not found, creating new one...")
+            self.create_ca()
+    
+    def create_ca(self):
+        """Create NEW Certificate Authority (only if doesn't exist)"""
+        ca_key_path = PKI_PATH / "ca.key"
+        ca_crt_path = PKI_PATH / "ca.crt"
+        
+        # Generate CA private key
+        ca_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=4096,
+            backend=default_backend()
+        )
+        
+        # Save CA private key
+        with open(ca_key_path, 'wb') as f:
+            f.write(ca_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+        
+        # Create CA certificate
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "TN"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ChatApp"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "ChatAppCA"),
+        ])
+        
+        ca_cert = x509.CertificateBuilder().subject_name(
+            subject
+        ).issuer_name(
+            issuer
+        ).public_key(
+            ca_key.public_key()
+        ).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(
+            datetime.utcnow()
+        ).not_valid_after(
+            datetime.utcnow() + timedelta(days=3650)  # 10 years
+        ).sign(ca_key, hashes.SHA256(), default_backend())
+        
+        # Save CA certificate
+        with open(ca_crt_path, 'wb') as f:
+            f.write(ca_cert.public_bytes(serialization.Encoding.PEM))
+        
+        print(f"✓ NEW CA certificate created at {PKI_PATH}")
     
     def create_user_cert(self, username):
-        """Create X.509 certificate and RSA key pair for user"""
-        try:
-            # Ensure PKI directory is accessible
-            if not PKI_PATH.exists():
-                print(f"Creating PKI directory: {PKI_PATH}")
-                PKI_PATH.mkdir(parents=True, exist_ok=True)
-            
-            user_key = PKI_PATH / f"{username}.key"
-            user_csr = PKI_PATH / f"{username}.csr"
-            user_crt = PKI_PATH / f"{username}.crt"
-            
-            # Generate RSA private key (2048 bits)
-            subprocess.run([
-                "openssl", "genrsa",
-                "-out", str(user_key),
-                "2048"
-            ], check=True, cwd=str(PKI_PATH))
-            
-            # Generate certificate signing request
-            subprocess.run([
-                "openssl", "req", "-new",
-                "-key", str(user_key),
-                "-out", str(user_csr),
-                "-subj", f"/CN={username}/O=ChatApp/C=TN"
-            ], check=True)
-            
-            # Sign certificate with CA
-            subprocess.run([
-                "openssl", "x509", "-req",
-                "-in", str(user_csr),
-                "-CA", str(PKI_PATH / "ca.crt"),
-                "-CAkey", str(PKI_PATH / "ca.key"),
-                "-CAcreateserial",
-                "-out", str(user_crt),
-                "-days", "365",
-                "-sha256"
-            ], check=True)
-            
-            # Generate public key from private key for RSA encryption
-            user_pub = PKI_PATH / f"{username}_pub.pem"
-            subprocess.run([
-                "openssl", "rsa",
-                "-in", str(user_key),
-                "-pubout",
-                "-out", str(user_pub)
-            ], check=True)
-            
-            print(f"Certificate and keys created for {username}")
+        """
+        Create user certificate SIGNED BY existing CA
+        Each user gets their own certificate signed by the ONE CA
+        """
+        user_key_path = PKI_PATH / f"{username}.key"
+        user_crt_path = PKI_PATH / f"{username}.crt"
+        user_pub_path = PKI_PATH / f"{username}_pub.pem"
+        
+        # Check if user certificate already exists
+        if user_key_path.exists() and user_crt_path.exists() and user_pub_path.exists():
+            print(f"✓ Certificate already exists for {username}")
             return True
-            
-        except subprocess.CalledProcessError as e:
-            print(f"Error creating certificate: {e}")
-            return False
-    
-    def get_user_cert_path(self, username):
-        """Get path to user's certificate"""
-        return str(PKI_PATH / f"{username}.crt")
+        
+        print(f"Creating new certificate for {username}...")
+        
+        # Generate user private key
+        user_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+        
+        # Save user private key
+        with open(user_key_path, 'wb') as f:
+            f.write(user_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+        
+        # Save user public key (for RSA encryption)
+        with open(user_pub_path, 'wb') as f:
+            f.write(user_key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            ))
+        
+        # Load the ONE CA key and certificate
+        ca_key_path = PKI_PATH / "ca.key"
+        ca_crt_path = PKI_PATH / "ca.crt"
+        
+        with open(ca_key_path, 'rb') as f:
+            ca_key = serialization.load_pem_private_key(
+                f.read(), password=None, backend=default_backend()
+            )
+        
+        with open(ca_crt_path, 'rb') as f:
+            ca_cert = x509.load_pem_x509_certificate(
+                f.read(), default_backend()
+            )
+        
+        # Create user certificate SIGNED BY CA
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "TN"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ChatApp"),
+            x509.NameAttribute(NameOID.COMMON_NAME, username),
+        ])
+        
+        user_cert = x509.CertificateBuilder().subject_name(
+            subject
+        ).issuer_name(
+            ca_cert.subject  # Signed by CA
+        ).public_key(
+            user_key.public_key()
+        ).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(
+            datetime.utcnow()
+        ).not_valid_after(
+            datetime.utcnow() + timedelta(days=365)  # 1 year
+        ).sign(ca_key, hashes.SHA256(), default_backend())  # Signed with CA's private key
+        
+        # Save user certificate
+        with open(user_crt_path, 'wb') as f:
+            f.write(user_cert.public_bytes(serialization.Encoding.PEM))
+        
+        print(f"✓ Certificate created for {username} (signed by CA)")
+        return True
     
     def get_user_key_path(self, username):
         """Get path to user's private key"""
@@ -107,14 +165,8 @@ class PKIManager:
         return str(PKI_PATH / f"{username}_pub.pem")
     
     def verify_cert(self, username):
-        """Verify user certificate against CA"""
-        try:
-            result = subprocess.run([
-                "openssl", "verify",
-                "-CAfile", str(PKI_PATH / "ca.crt"),
-                str(PKI_PATH / f"{username}.crt")
-            ], capture_output=True, text=True)
-            
-            return "OK" in result.stdout
-        except:
-            return False
+        """Check if user certificate exists"""
+        cert_path = PKI_PATH / f"{username}.crt"
+        key_path = PKI_PATH / f"{username}.key"
+        pub_path = PKI_PATH / f"{username}_pub.pem"
+        return cert_path.exists() and key_path.exists() and pub_path.exists()

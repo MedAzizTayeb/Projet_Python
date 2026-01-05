@@ -5,44 +5,38 @@ RABBITMQ_HOST = "192.168.92.1"
 
 class MQ:
     def __init__(self, user):
-        """Initialize RabbitMQ connection for user"""
+        """Initialize RabbitMQ connection (AMQP protocol)"""
         self.username = user
         self.conn = pika.BlockingConnection(
             pika.ConnectionParameters(host=RABBITMQ_HOST)
         )
         self.channel = self.conn.channel()
         
-        # Declare user's personal queue
+        # Create user's personal queue
         self.queue_name = f"user_{user}"
         self.channel.queue_declare(queue=self.queue_name, durable=True)
         
-        # Declare presence exchange for active users
+        # Create presence exchange
         self.channel.exchange_declare(
             exchange='chat_presence',
             exchange_type='fanout'
         )
     
     def send_message(self, to_user, encrypted_msg):
-        """Send encrypted message to another user"""
+        """Send encrypted message to another user via RabbitMQ"""
         to_queue = f"user_{to_user}"
-        
-        # Ensure recipient queue exists
         self.channel.queue_declare(queue=to_queue, durable=True)
         
-        # Create message with metadata
         message = json.dumps({
             'from': self.username,
-            'message': encrypted_msg.hex(),  # Convert bytes to hex string
-            'timestamp': None  # Will be added by receiver
+            'message': encrypted_msg.hex()
         })
         
         self.channel.basic_publish(
             exchange='',
             routing_key=to_queue,
             body=message,
-            properties=pika.BasicProperties(
-                delivery_mode=2,  # Make message persistent
-            )
+            properties=pika.BasicProperties(delivery_mode=2)
         )
     
     def listen(self, callback):
@@ -66,18 +60,8 @@ class MQ:
             body=message
         )
     
-    def get_active_users(self):
-        """
-        Get list of active users by checking existing queues.
-        Note: This is a simplified version. In production, 
-        you'd use a proper presence system.
-        """
-        # This requires RabbitMQ Management API or a dedicated presence service
-        # For now, return empty list - implement with management API if needed
-        return []
-    
     def close(self):
-        """Close connection"""
+        """Close RabbitMQ connection"""
         if self.conn and not self.conn.is_closed:
             self.announce_presence('offline')
             self.conn.close()
