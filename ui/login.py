@@ -11,7 +11,7 @@ from pki_manager import PKIManager
 class LoginApp:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Secure Chat - Login")
+        self.root.title("P2P Chat Room - Login")
         self.root.geometry("400x500")
         self.root.resizable(False, False)
         
@@ -26,7 +26,7 @@ class LoginApp:
         container.pack(fill='both', expand=True)
         
         # Title
-        ttk.Label(container, text="🔒 Secure Chat", 
+        ttk.Label(container, text="🔒 P2P Chat Room", 
                  font=('Arial', 18, 'bold')).pack(pady=(0, 5))
         ttk.Label(container, text="PKI-based encrypted messaging",
                  font=('Arial', 10)).pack(pady=(0, 20))
