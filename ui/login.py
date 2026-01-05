@@ -114,35 +114,71 @@ class LoginApp:
                     self.root.destroy()
                     ChatApp(username).run()
                 except Exception as e:
-                    # Connection error (likely RabbitMQ)
+                    # Detailed connection error handling
                     error_msg = str(e)
-                    if "AMQPConnectionError" in str(type(e)) or "Connection" in error_msg:
+                    error_type = type(e).__name__
+                    
+                    if "AMQPConnectionError" in error_type or "ConnectionRefusedError" in error_type:
                         messagebox.showerror(
                             "RabbitMQ Connection Error",
-                            "Cannot connect to RabbitMQ server!\n\n"
-                            "Please check:\n"
-                            "1. RabbitMQ service is running\n"
-                            "2. Server IP in rabbitmq_manager.py is correct\n"
-                            "3. Port 5672 is accessible\n\n"
-                            "Start RabbitMQ with:\n"
-                            "  sudo systemctl start rabbitmq-server"
+                            "❌ Cannot connect to RabbitMQ server!\n\n"
+                            "Troubleshooting steps:\n\n"
+                            "1. Check RabbitMQ is running on host:\n"
+                            "   - Windows: Check Services for 'RabbitMQ'\n"
+                            "   - Linux: sudo systemctl status rabbitmq-server\n\n"
+                            "2. Verify it's listening on all interfaces:\n"
+                            "   - Run: netstat -an | findstr :5672\n"
+                            "   - Should show: 0.0.0.0:5672 (not 127.0.0.1)\n\n"
+                            "3. Check Windows Firewall:\n"
+                            "   - Allow port 5672 for VMnet8\n\n"
+                            "4. Verify host IP in rabbitmq_manager.py:\n"
+                            f"   - Current: 192.168.92.1\n"
+                            f"   - Can you ping it from VM?"
+                        )
+                    elif "timeout" in error_msg.lower():
+                        messagebox.showerror(
+                            "Connection Timeout",
+                            "⏱️ Connection timed out!\n\n"
+                            "Possible causes:\n"
+                            "- Firewall blocking port 5672\n"
+                            "- RabbitMQ not listening on correct interface\n"
+                            "- Network configuration issue\n\n"
+                            f"Error: {error_msg}"
                         )
                     else:
-                        messagebox.showerror("Error", f"Failed to start chat:\n{e}")
+                        messagebox.showerror(
+                            "Connection Error", 
+                            f"Failed to start chat:\n\n{error_type}: {error_msg}"
+                        )
                     
                     # Recreate login window since we destroyed it
                     LoginApp().run()
                     return
             else:
                 self.login_status.config(
-                    text="Invalid username or password",
+                    text="❌ Invalid username or password",
                     foreground='red'
                 )
-        except Exception as e:
+        except ConnectionRefusedError:
             self.login_status.config(
-                text=f"Login error: {e}",
+                text="❌ Cannot connect to LDAP server",
                 foreground='red'
             )
+            messagebox.showerror(
+                "LDAP Connection Error",
+                "Cannot connect to LDAP server!\n\n"
+                f"Server: {self.ldap.LDAP_SERVER}\n\n"
+                "Please verify:\n"
+                "1. LDAP server is running\n"
+                "2. Server IP is correct\n"
+                "3. Network connectivity"
+            )
+        except Exception as e:
+            self.login_status.config(
+                text=f"❌ Login error",
+                foreground='red'
+            )
+            messagebox.showerror("Error", f"Login failed:\n{type(e).__name__}: {e}")
     
     def handle_register(self):
         """Handle registration - add to LDAP and create PKI certificate"""
@@ -153,40 +189,77 @@ class LoginApp:
         
         # Validation
         if not username or not email or not password:
-            self.reg_status.config(text="Please fill all fields")
+            self.reg_status.config(text="❌ Please fill all fields")
             return
         
         if len(username) < 3:
-            self.reg_status.config(text="Username too short (min 3 chars)")
+            self.reg_status.config(text="❌ Username too short (min 3 chars)")
             return
         
         if len(password) < 6:
-            self.reg_status.config(text="Password too short (min 6 chars)")
+            self.reg_status.config(text="❌ Password too short (min 6 chars)")
             return
         
         if password != confirm:
-            self.reg_status.config(text="Passwords don't match")
+            self.reg_status.config(text="❌ Passwords don't match")
             return
         
         if '@' not in email:
-            self.reg_status.config(text="Invalid email address")
+            self.reg_status.config(text="❌ Invalid email address")
             return
         
-        if self.ldap.user_exists(username):
-            self.reg_status.config(text="Username already exists")
+        # Check if user already exists (IMPROVED)
+        self.reg_status.config(text="Checking username...", foreground='blue')
+        self.root.update()
+        
+        try:
+            if self.ldap.user_exists(username):
+                self.reg_status.config(
+                    text="❌ Username already taken",
+                    foreground='red'
+                )
+                messagebox.showwarning(
+                    "Username Exists",
+                    f"The username '{username}' is already registered.\n\n"
+                    "Please choose a different username or login if this is your account."
+                )
+                return
+        except ConnectionRefusedError:
+            self.reg_status.config(text="❌ Cannot connect to LDAP", foreground='red')
+            messagebox.showerror(
+                "LDAP Connection Error",
+                "Cannot connect to LDAP server to check username!\n\n"
+                f"Server: {self.ldap.LDAP_SERVER}\n\n"
+                "Please verify the server is running and accessible."
+            )
+            return
+        except Exception as e:
+            self.reg_status.config(text="❌ Error checking username", foreground='red')
+            messagebox.showerror("Error", f"Failed to check username:\n{type(e).__name__}: {e}")
             return
         
+        # Proceed with registration
         self.reg_status.config(text="Creating account...", foreground='blue')
         self.root.update()
         
-        # Register in LDAP
         try:
+            # Register in LDAP
             if self.ldap.register_user(username, password, email):
                 # Create PKI certificate (signed by CA)
+                self.reg_status.config(text="Creating certificate...", foreground='blue')
+                self.root.update()
+                
                 if self.pki.create_user_cert(username):
                     self.reg_status.config(
-                        text="✓ Registration successful! Please login.",
+                        text="✅ Registration successful! Please login.",
                         foreground='green'
+                    )
+                    messagebox.showinfo(
+                        "Registration Successful",
+                        f"Account created successfully!\n\n"
+                        f"Username: {username}\n"
+                        f"Email: {email}\n\n"
+                        "You can now login with your credentials."
                     )
                     # Clear form
                     self.reg_username.delete(0, 'end')
@@ -194,11 +267,36 @@ class LoginApp:
                     self.reg_password.delete(0, 'end')
                     self.reg_confirm.delete(0, 'end')
                 else:
-                    self.reg_status.config(text="Error creating certificate", foreground='red')
+                    self.reg_status.config(text="❌ Certificate creation failed", foreground='red')
+                    messagebox.showerror(
+                        "Certificate Error",
+                        "Account created but certificate generation failed.\n\n"
+                        "You may need to contact an administrator."
+                    )
             else:
-                self.reg_status.config(text="Registration failed", foreground='red')
+                self.reg_status.config(text="❌ Registration failed", foreground='red')
+                messagebox.showerror(
+                    "Registration Failed",
+                    "Failed to create account in LDAP.\n\n"
+                    "This could be due to:\n"
+                    "- LDAP server connection issue\n"
+                    "- Invalid user data\n"
+                    "- Permission problems"
+                )
+        except ConnectionRefusedError:
+            self.reg_status.config(text="❌ Cannot connect to LDAP", foreground='red')
+            messagebox.showerror(
+                "LDAP Connection Error",
+                "Cannot connect to LDAP server!\n\n"
+                f"Server: {self.ldap.LDAP_SERVER}\n\n"
+                "Please verify the server is running."
+            )
         except Exception as e:
-            self.reg_status.config(text=f"Error: {e}", foreground='red')
+            self.reg_status.config(text="❌ Registration error", foreground='red')
+            messagebox.showerror(
+                "Registration Error",
+                f"An error occurred during registration:\n\n{type(e).__name__}: {e}"
+            )
     
     def run(self):
         """Start the application"""
