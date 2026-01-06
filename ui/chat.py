@@ -16,7 +16,7 @@ class ChatApp:
     def __init__(self, username):
         self.username = username
         self.current_chat = None
-        self.active_users = set()
+        self.active_users = {}  # Changed to dict to track online status
         
         self.pki = PKIManager()
         self.mq = MQ(username)
@@ -28,7 +28,10 @@ class ChatApp:
         
         self.create_widgets()
         self.start_message_listener()
-        self.mq.announce_presence('online')
+        self.start_presence_listener()
+        
+        # Announce presence after UI is ready
+        self.root.after(500, lambda: self.mq.announce_presence('online'))
     
     def create_widgets(self):
         """Create chat interface"""
@@ -54,7 +57,7 @@ class ChatApp:
                 pady=15).pack(fill='x')
         
         # Active users label
-        tk.Label(sidebar, text="Active Users",
+        tk.Label(sidebar, text="Users",
                 bg='#34495e', fg='white',
                 font=('Arial', 11, 'bold'),
                 pady=10).pack(fill='x')
@@ -104,6 +107,17 @@ class ChatApp:
         )
         self.chat_header.pack(fill='x')
         
+        # Status indicator
+        self.status_label = tk.Label(
+            chat,
+            text="",
+            bg='#ecf0f1',
+            fg='#7f8c8d',
+            font=('Arial', 9),
+            pady=5
+        )
+        self.status_label.pack(fill='x')
+        
         # Messages area
         self.messages_text = scrolledtext.ScrolledText(
             chat,
@@ -135,6 +149,10 @@ class ChatApp:
             foreground='#95a5a6',
             font=('Arial', 9, 'italic')
         )
+        self.messages_text.tag_configure('warning',
+            foreground='#e67e22',
+            font=('Arial', 9, 'italic')
+        )
         
         # Input area
         input_frame = tk.Frame(chat, bg='#ecf0f1')
@@ -145,11 +163,12 @@ class ChatApp:
             height=3,
             font=('Arial', 10),
             relief='solid',
-            borderwidth=1
+            borderwidth=1,
+            wrap='word'
         )
         self.message_entry.pack(side='left', fill='both', expand=True)
-        self.message_entry.bind('<Control-Return>', 
-                               lambda e: self.send_message())
+        self.message_entry.bind('<Return>', self.on_enter_key)
+        self.message_entry.bind('<Shift-Return>', lambda e: None)
         
         tk.Button(input_frame, text="Send",
                  bg='#3498db', fg='white',
@@ -157,10 +176,19 @@ class ChatApp:
                  command=self.send_message,
                  width=10).pack(side='right', fill='y', padx=(10, 0))
     
+    def on_enter_key(self, event):
+        """Handle Enter key - send message (Shift+Enter for newline)"""
+        # Check if Shift key is pressed
+        if event.state & 0x0001:  # Shift is pressed
+            return  # Allow default behavior (insert newline)
+        else:
+            # Send message and prevent default newline
+            self.send_message()
+            return 'break'
+    
     def refresh_users(self):
         """Get list of registered users from PKI directory"""
         self.user_listbox.delete(0, 'end')
-        self.active_users.clear()
         
         try:
             # Get all user certificates from PKI directory
@@ -172,10 +200,16 @@ class ChatApp:
                 if username != "ca" and username != self.username:
                     users.add(username)
             
-            # Add to listbox
+            # Add to listbox with online/offline status
             for user in sorted(users):
-                self.user_listbox.insert('end', f"🟢 {user}")
-                self.active_users.add(user)
+                # Check if we know their online status
+                is_online = self.active_users.get(user, False)
+                icon = "🟢" if is_online else "⚫"
+                self.user_listbox.insert('end', f"{icon} {user}")
+                
+                # Store in active_users dict
+                if user not in self.active_users:
+                    self.active_users[user] = False
             
             if not users:
                 messagebox.showinfo("No Users", 
@@ -184,25 +218,77 @@ class ChatApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to refresh users: {e}")
     
+    def update_user_status(self, username, online):
+        """Update user's online/offline status in the list"""
+        if username == self.username:
+            return
+        
+        self.active_users[username] = online
+        
+        # Update listbox
+        for i in range(self.user_listbox.size()):
+            item = self.user_listbox.get(i)
+            user = item.replace('🟢', '').replace('⚫', '').strip()
+            
+            if user == username:
+                icon = "🟢" if online else "⚫"
+                self.user_listbox.delete(i)
+                self.user_listbox.insert(i, f"{icon} {username}")
+                
+                # Update chat header if this is current chat
+                if self.current_chat == username:
+                    self.update_chat_status()
+                break
+        else:
+            # User not in list yet, add them
+            icon = "🟢" if online else "⚫"
+            self.user_listbox.insert('end', f"{icon} {username}")
+    
+    def update_chat_status(self):
+        """Update the status label for current chat"""
+        if not self.current_chat:
+            self.status_label.config(text="")
+            return
+        
+        is_online = self.active_users.get(self.current_chat, False)
+        if is_online:
+            self.status_label.config(
+                text="🟢 Online - Messages delivered instantly",
+                fg='#27ae60'
+            )
+        else:
+            self.status_label.config(
+                text="⚫ Offline - Messages will be delivered when they come online",
+                fg='#7f8c8d'
+            )
+    
     def on_user_select(self, event):
         """Handle user selection - open discussion area"""
         selection = self.user_listbox.curselection()
         if selection:
             user_text = self.user_listbox.get(selection[0])
-            username = user_text.replace('🟢', '').strip()
+            username = user_text.replace('🟢', '').replace('⚫', '').strip()
             self.open_chat(username)
     
     def open_chat(self, username):
         """Open chat with selected user"""
         self.current_chat = username
         self.chat_header.config(text=f"💬 Chat with {username}")
+        self.update_chat_status()
         
         self.messages_text.config(state='normal')
         self.messages_text.delete(1.0, 'end')
         self.add_info_message(f"Started chat with {username}")
         self.add_info_message("🔒 Messages encrypted with RSA")
-        self.messages_text.config(state='disabled')
         
+        # Show offline warning if user is offline
+        if not self.active_users.get(username, False):
+            self.messages_text.insert('end', 
+                "\n⚠️  User is currently offline. Your messages will be delivered when they come online.\n",
+                'warning'
+            )
+        
+        self.messages_text.config(state='disabled')
         self.message_entry.focus()
     
     def send_message(self):
@@ -222,12 +308,19 @@ class ChatApp:
             # Encrypt with RSA
             encrypted = encrypt(message, recipient_pubkey)
             
-            # Send via RabbitMQ
+            # Send via RabbitMQ (will be queued if user is offline)
             self.mq.send_message(self.current_chat, encrypted)
             
             # Display with date/time
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.add_message(message, 'sent', timestamp)
+            
+            # Show delivery status
+            is_online = self.active_users.get(self.current_chat, False)
+            if is_online:
+                self.add_info_message("✓ Delivered")
+            else:
+                self.add_info_message("✓ Sent (will be delivered when user comes online)")
             
             self.message_entry.delete(1.0, 'end')
             
@@ -287,16 +380,65 @@ class ChatApp:
                         self.root.after(0, lambda: self.show_notification(sender))
                         
                 except Exception as e:
-                    print(f"Error: {e}")
+                    print(f"Error receiving message: {e}")
             
             self.mq.listen(callback)
+        
+        threading.Thread(target=listen, daemon=True).start()
+    
+    def start_presence_listener(self):
+        """Listen for presence announcements (online/offline)"""
+        def listen():
+            try:
+                # Create separate connection for presence
+                import pika
+                from rabbitmq_manager import RABBITMQ_HOST, RABBITMQ_USER, RABBITMQ_PASS
+                
+                credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
+                parameters = pika.ConnectionParameters(
+                    host=RABBITMQ_HOST,
+                    port=5672,
+                    credentials=credentials,
+                    heartbeat=600
+                )
+                
+                connection = pika.BlockingConnection(parameters)
+                channel = connection.channel()
+                
+                # Bind to presence exchange
+                channel.exchange_declare(exchange='chat_presence', exchange_type='fanout')
+                result = channel.queue_declare(queue='', exclusive=True)
+                queue_name = result.method.queue
+                channel.queue_bind(exchange='chat_presence', queue=queue_name)
+                
+                def callback(ch, method, properties, body):
+                    try:
+                        data = json.loads(body.decode())
+                        user = data['user']
+                        status = data['status']
+                        
+                        is_online = (status == 'online')
+                        self.root.after(0, lambda: self.update_user_status(user, is_online))
+                        
+                    except Exception as e:
+                        print(f"Error processing presence: {e}")
+                
+                channel.basic_consume(queue=queue_name, on_message_callback=callback, auto_ack=True)
+                print("Listening for presence updates...")
+                channel.start_consuming()
+                
+            except Exception as e:
+                print(f"Presence listener error: {e}")
         
         threading.Thread(target=listen, daemon=True).start()
     
     def show_notification(self, sender):
         """Show notification for new message"""
         self.root.title(f"💬 New message from {sender}")
-        self.root.after(3000, lambda: self.root.title(f"Chat Room - {self.username}"))
+        self.root.after(3000, lambda: self.root.title(f"P2P Chat Room - {self.username}"))
+        
+        # Play system bell
+        self.root.bell()
     
     def logout(self):
         """Disconnect and exit application"""
