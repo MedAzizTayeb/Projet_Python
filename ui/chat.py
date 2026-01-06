@@ -25,7 +25,7 @@ class ChatApp:
         self.root = tk.Tk()
         self.root.title(f"P2P Chat Room - {username}")
         self.root.geometry("900x600")
-        self.root.minsize(800, 500)  # Set minimum window size
+        self.root.minsize(800, 500)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.create_widgets()
@@ -37,9 +37,8 @@ class ChatApp:
     
     def initial_setup(self):
         """Initial setup after UI is ready"""
-        # Announce presence multiple times to ensure everyone gets it
-        for _ in range(3):
-            self.mq.announce_presence('online')
+        # Announce presence once initially
+        self.mq.announce_presence('online')
         
         self.refresh_users()
         
@@ -68,6 +67,15 @@ class ChatApp:
                 bg='#34495e', fg='white',
                 font=('Arial', 12, 'bold'),
                 pady=15).pack(fill='x')
+        
+        # Group Chat Button (NEW)
+        tk.Button(sidebar, text="💬 Group Chat",
+                 bg='#27ae60', fg='white',
+                 font=('Arial', 11, 'bold'),
+                 command=self.open_group_chat,
+                 relief='flat',
+                 cursor='hand2',
+                 pady=12).pack(fill='x', padx=10, pady=(5, 10))
         
         # Active users label
         tk.Label(sidebar, text="Available Users",
@@ -180,28 +188,54 @@ class ChatApp:
         )
         self.messages_text.pack(fill='both', expand=True, padx=20, pady=(10, 0), side='top')
         
-        # Message styling
+        # Message styling - IMPROVED ALIGNMENT
+        # Sent messages (right-aligned) - push to the right edge
         self.messages_text.tag_configure('sent',
             background='#3498db',
             foreground='white',
-            lmargin1=200, lmargin2=200, rmargin=20
+            lmargin1=400,  # Large left margin pushes message to the right
+            lmargin2=400,
+            rmargin=10,    # Small right margin
+            justify='right'
         )
+        
+        # Received messages (left-aligned)
         self.messages_text.tag_configure('received',
             background='#95a5a6',
             foreground='white',
-            lmargin1=20, lmargin2=20, rmargin=200
+            lmargin1=10,   # Small left margin
+            lmargin2=10,
+            rmargin=400,   # Large right margin leaves space on the right
+            justify='left'
         )
-        self.messages_text.tag_configure('time',
+        
+        # Timestamp styling
+        self.messages_text.tag_configure('time_sent',
             foreground='#7f8c8d',
-            font=('Arial', 8)
+            font=('Arial', 8),
+            lmargin1=400,
+            rmargin=10,
+            justify='right'
         )
+        
+        self.messages_text.tag_configure('time_received',
+            foreground='#7f8c8d',
+            font=('Arial', 8),
+            lmargin1=10,
+            rmargin=400,
+            justify='left'
+        )
+        
+        # Info and warning messages (centered)
         self.messages_text.tag_configure('info',
             foreground='#95a5a6',
-            font=('Arial', 9, 'italic')
+            font=('Arial', 9, 'italic'),
+            justify='center'
         )
         self.messages_text.tag_configure('warning',
             foreground='#e67e22',
-            font=('Arial', 9, 'italic')
+            font=('Arial', 9, 'italic'),
+            justify='center'
         )
         
         # Placeholder text
@@ -315,10 +349,21 @@ class ChatApp:
         
         # Update user button if it exists
         if username in self.user_buttons:
-            status_color = '#27ae60' if online else '#95a5a6'
-            canvas = self.user_buttons[username]['canvas']
-            canvas.delete('all')
-            canvas.create_oval(2, 2, 10, 10, fill=status_color, outline=status_color)
+            try:
+                status_color = '#27ae60' if online else '#95a5a6'
+                canvas = self.user_buttons[username]['canvas']
+                
+                # Check if canvas still exists
+                if canvas.winfo_exists():
+                    canvas.delete('all')
+                    canvas.create_oval(2, 2, 10, 10, fill=status_color, outline=status_color)
+                else:
+                    # Canvas was destroyed, remove from tracking
+                    del self.user_buttons[username]
+            except tk.TclError:
+                # Widget was destroyed, remove from tracking
+                if username in self.user_buttons:
+                    del self.user_buttons[username]
             
             # Update chat header if this is current chat
             if self.current_chat == username:
@@ -332,8 +377,20 @@ class ChatApp:
         """Update the status label for current chat"""
         if not self.current_chat:
             self.status_label.config(text="")
+            self.chat_header.config(bg='#3498db')  # Reset to default blue
             return
         
+        # Group chat has special status
+        if self.current_chat == "__GROUP_CHAT__":
+            self.status_label.config(
+                text="● Public room - All users can see your messages",
+                fg='#27ae60'
+            )
+            self.chat_header.config(bg='#27ae60')
+            return
+        
+        # Regular private chat
+        self.chat_header.config(bg='#3498db')
         is_online = self.active_users.get(self.current_chat, False)
         if is_online:
             self.status_label.config(
@@ -345,19 +402,6 @@ class ChatApp:
                 text="● Offline - Messages will be delivered when they come online",
                 fg='#95a5a6'
             )
-    
-    def on_user_select(self, event):
-        """Handle user selection - open chat"""
-        selection = self.user_listbox.curselection()
-        if not selection:
-            return
-            
-        user_text = self.user_listbox.get(selection[0])
-        if user_text == "No users found":
-            return
-            
-        username = user_text.replace('🟢', '').replace('⚫', '').strip()
-        self.open_chat(username)
     
     def open_chat(self, username):
         """Open chat with selected user - preserves message history"""
@@ -402,8 +446,66 @@ class ChatApp:
                     # Regular message
                     if self.messages_text.get(1.0, 'end').strip():
                         self.messages_text.insert('end', '\n')
+                    
+                    # Use appropriate timestamp tag based on message type
+                    time_tag = 'time_sent' if msg_type == 'sent' else 'time_received'
+                    
                     self.messages_text.insert('end', f"  {msg_data['text']}  ", msg_type)
-                    self.messages_text.insert('end', f"\n{msg_data['timestamp']}", 'time')
+                    self.messages_text.insert('end', f"\n{msg_data['timestamp']}\n", time_tag)
+        
+        self.messages_text.config(state='disabled')
+        self.messages_text.see('end')
+        self.message_entry.focus()
+    
+    def open_group_chat(self):
+        """Open group chat room where everyone can see messages"""
+        # Use special identifier for group chat
+        if self.current_chat == "__GROUP_CHAT__":
+            return
+        
+        self.current_chat = "__GROUP_CHAT__"
+        self.chat_header.config(text="💬 Group Chat", bg='#27ae60')
+        self.status_label.config(
+            text="● Public room - All users can see your messages",
+            fg='#27ae60'
+        )
+        
+        # Enable input
+        self.message_entry.config(state='normal', fg='#2c3e50')
+        self.message_entry.delete(1.0, 'end')
+        self.send_button.config(state='normal', bg='#27ae60')
+        
+        # Clear and restore messages from history
+        self.messages_text.config(state='normal')
+        self.messages_text.delete(1.0, 'end')
+        
+        # Initialize history for group chat if doesn't exist
+        if "__GROUP_CHAT__" not in self.message_history:
+            self.message_history["__GROUP_CHAT__"] = []
+            self.add_info_message("Welcome to Group Chat!")
+            self.add_info_message("📢 Everyone can see messages here")
+        else:
+            # Restore group chat history
+            for msg_data in self.message_history["__GROUP_CHAT__"]:
+                msg_type = msg_data['type']
+                if msg_type == 'info':
+                    self.messages_text.insert('end', f"ℹ️  {msg_data['text']}\n", 'info')
+                elif msg_type == 'warning':
+                    self.messages_text.insert('end', f"{msg_data['text']}\n", 'warning')
+                elif msg_type == 'group':
+                    # Group message with sender name
+                    if self.messages_text.get(1.0, 'end').strip():
+                        self.messages_text.insert('end', '\n')
+                    
+                    sender = msg_data.get('sender', 'Unknown')
+                    
+                    # Show sender name for group messages
+                    if sender == self.username:
+                        self.messages_text.insert('end', f"You: {msg_data['text']}  ", 'sent')
+                        self.messages_text.insert('end', f"\n{msg_data['timestamp']}\n", 'time_sent')
+                    else:
+                        self.messages_text.insert('end', f"{sender}: {msg_data['text']}  ", 'received')
+                        self.messages_text.insert('end', f"\n{msg_data['timestamp']}\n", 'time_received')
         
         self.messages_text.config(state='disabled')
         self.messages_text.see('end')
@@ -417,6 +519,11 @@ class ChatApp:
         
         message = self.message_entry.get(1.0, 'end').strip()
         if not message:
+            return
+        
+        # Handle group chat differently
+        if self.current_chat == "__GROUP_CHAT__":
+            self.send_group_message(message)
             return
         
         try:
@@ -457,6 +564,75 @@ class ChatApp:
             import traceback
             traceback.print_exc()
     
+    def send_group_message(self, message):
+        """Send message to group chat (broadcasts to all users)"""
+        try:
+            # Get all registered users
+            from pki_manager import PKI_PATH
+            
+            users = set()
+            for file in PKI_PATH.glob("*.crt"):
+                username = file.stem
+                if username != "ca" and username != self.username:
+                    users.add(username)
+            
+            if not users:
+                self.add_info_message("⚠️ No other users registered")
+                return
+            
+            # Broadcast to all users
+            sent_count = 0
+            for user in users:
+                try:
+                    # Get user's public key
+                    user_pubkey = self.pki.get_user_pubkey_path(user)
+                    
+                    if os.path.exists(user_pubkey):
+                        # Create group message with sender info
+                        group_msg = f"[GROUP] {self.username}: {message}"
+                        encrypted = encrypt(group_msg, user_pubkey)
+                        self.mq.send_message(user, encrypted)
+                        sent_count += 1
+                except Exception as e:
+                    print(f"Failed to send to {user}: {e}")
+            
+            # Display with timestamp
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Save to history with sender info
+            if "__GROUP_CHAT__" not in self.message_history:
+                self.message_history["__GROUP_CHAT__"] = []
+            
+            self.message_history["__GROUP_CHAT__"].append({
+                'type': 'group',
+                'sender': self.username,
+                'text': message,
+                'timestamp': timestamp
+            })
+            
+            # Display in chat
+            self.messages_text.config(state='normal')
+            if self.messages_text.get(1.0, 'end').strip():
+                self.messages_text.insert('end', '\n')
+            self.messages_text.insert('end', f"You: {message}  ", 'sent')
+            self.messages_text.insert('end', f"\n{timestamp}\n", 'time_sent')
+            self.messages_text.config(state='disabled')
+            self.messages_text.see('end')
+            
+            # Show status
+            self.add_info_message(f"✓ Sent to {sent_count} user(s)")
+            
+            # Clear input
+            self.message_entry.delete(1.0, 'end')
+            
+            print(f"[GROUP] Broadcast to {sent_count} users: {message}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send group message:\n{e}")
+            print(f"Group send error: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def add_message(self, text, msg_type, timestamp):
         """Add message with timestamp and save to history"""
         self.messages_text.config(state='normal')
@@ -464,10 +640,13 @@ class ChatApp:
         if self.messages_text.get(1.0, 'end').strip():
             self.messages_text.insert('end', '\n')
         
-        # Add message
+        # Use appropriate timestamp tag
+        time_tag = 'time_sent' if msg_type == 'sent' else 'time_received'
+        
+        # Add message bubble
         self.messages_text.insert('end', f"  {text}  ", msg_type)
-        # Add timestamp
-        self.messages_text.insert('end', f"\n{timestamp}", 'time')
+        # Add timestamp with appropriate alignment
+        self.messages_text.insert('end', f"\n{timestamp}\n", time_tag)
         
         self.messages_text.config(state='disabled')
         self.messages_text.see('end')
@@ -526,23 +705,83 @@ class ChatApp:
                     my_privkey = self.pki.get_user_key_path(self.username)
                     decrypted = decrypt(encrypted_msg, my_privkey)
                     
-                    # Display with timestamp
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    # Check if it's a group message
+                    is_group_msg = decrypted.startswith("[GROUP] ")
                     
-                    if sender == self.current_chat:
-                        self.root.after(0, lambda: self.add_message(
-                            decrypted, 'received', timestamp
-                        ))
+                    if is_group_msg:
+                        # Parse group message
+                        # Format: [GROUP] sender: message
+                        decrypted = decrypted[8:]  # Remove "[GROUP] " prefix
+                        
+                        # Display with timestamp
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        print(f"[GROUP RECEIVED] {decrypted}")
+                        
+                        # Store in group chat history
+                        if "__GROUP_CHAT__" not in self.message_history:
+                            self.message_history["__GROUP_CHAT__"] = []
+                        
+                        self.message_history["__GROUP_CHAT__"].append({
+                            'type': 'group',
+                            'sender': sender,
+                            'text': decrypted.split(': ', 1)[1] if ': ' in decrypted else decrypted,
+                            'timestamp': timestamp
+                        })
+                        
+                        # Display if in group chat
+                        if self.current_chat == "__GROUP_CHAT__":
+                            self.root.after(0, lambda d=decrypted, t=timestamp: self.add_group_message(d, t))
+                        else:
+                            # Show notification
+                            self.root.after(0, lambda: self.show_notification("Group Chat"))
                     else:
-                        # Show notification
-                        self.root.after(0, lambda: self.show_notification(sender))
+                        # Regular private message
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        print(f"[RECEIVED] From {sender}: {decrypted}")
+                        
+                        # Store message in history even if not in current chat
+                        if sender not in self.message_history:
+                            self.message_history[sender] = []
+                        
+                        self.message_history[sender].append({
+                            'type': 'received',
+                            'text': decrypted,
+                            'timestamp': timestamp
+                        })
+                        
+                        # Display if this is the current chat
+                        if sender == self.current_chat:
+                            self.root.after(0, lambda: self.add_message(
+                                decrypted, 'received', timestamp
+                            ))
+                        else:
+                            # Show notification
+                            self.root.after(0, lambda: self.show_notification(sender))
                         
                 except Exception as e:
                     print(f"Error receiving message: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             self.mq.listen(callback)
         
         threading.Thread(target=listen, daemon=True).start()
+    
+    def add_group_message(self, full_message, timestamp):
+        """Add group message to chat display"""
+        self.messages_text.config(state='normal')
+        
+        if self.messages_text.get(1.0, 'end').strip():
+            self.messages_text.insert('end', '\n')
+        
+        # Display group message
+        self.messages_text.insert('end', f"{full_message}  ", 'received')
+        self.messages_text.insert('end', f"\n{timestamp}\n", 'time_received')
+        
+        self.messages_text.config(state='disabled')
+        self.messages_text.see('end')
     
     def start_presence_listener(self):
         """Listen for presence announcements"""
